@@ -141,6 +141,7 @@ class SpectrumCalibrationRestoration:
         # calibration_to_spectrum method returns detected accelerator proton energies array from calibration,
         # then proton_energies_to_calibration returns calibration from protons energies
         # procedures repeat iteratively to obtain optimal spectrum and calibration
+        # initial calibration is taken from Bragg peak position analysis by Vladimir Palmin
         for i in range(number_of_iterations):
             print(i)
             self.proton_energies = self.calibration_to_spectrum(self.calibration, self.channel_error_coefficients)
