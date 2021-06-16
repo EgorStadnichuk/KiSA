@@ -1,10 +1,10 @@
 import numpy as np
-import scipy.integrate
 from scipy.optimize import minimize
 import satelite_read_hdf
 import os
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
+import spectrum
 
 
 class SpectrumCalibrationRestoration:
@@ -27,6 +27,12 @@ class SpectrumCalibrationRestoration:
     geant4_simulation_data_proton_energy_bin = 0.05  # MeV
     # geant4_simulation_data_proton_energy_bin - an energy step of Geant4 proton simulations
     proton_energies = 0
+    number_of_calibration_picture = 0  # для построения картинок с разными номерами итераций
+    number_of_spectrum_picture = 0  # для построения картинок с разными номерами итераций
+    muon_calibration_old = np.loadtxt(os.path.join('calibration', 'muon_calibration_old.txt'))
+    # старая калибровка на мюонах
+
+    # старая калибровка на мюонах
 
     # proton_energies - a 1d array of restored energies of accelerator protons. Calls as proton_energies[i],
     # i - number of event in accordance with detector_processed_data
@@ -54,9 +60,11 @@ class SpectrumCalibrationRestoration:
             # error
             return interp1d(self.geant4_simulation_energies[len(self.geant4_simulation_energies) - 3: len(
                 self.geant4_simulation_energies)], np.array([self.geant4_simulation_data[
-                            len(self.geant4_simulation_energies) - 3][channel_number], self.geant4_simulation_data[
-                    len(self.geant4_simulation_energies) - 2][channel_number], self.geant4_simulation_data[len(
-                        self.geant4_simulation_energies) - 1][channel_number]]), kind='quadratic',
+                                                                 len(self.geant4_simulation_energies) - 3][
+                                                                 channel_number], self.geant4_simulation_data[
+                                                                 len(self.geant4_simulation_energies) - 2][
+                                                                 channel_number], self.geant4_simulation_data[len(
+                self.geant4_simulation_energies) - 1][channel_number]]), kind='quadratic',
                             fill_value='extrapolate')(np.array([energy]))
         else:
             return interp1d(self.geant4_simulation_energies[index - 1: index + 2], np.array(
@@ -65,23 +73,29 @@ class SpectrumCalibrationRestoration:
                  self.geant4_simulation_data[index + 1][channel_number]]), kind='quadratic', fill_value='extrapolate')(
                 np.array([energy]))
 
-    def spectrum_to_calibration(self, spectrum, number_of_particles):  # returns detector calibration from
+    def spectrum_to_calibration(self, protons_spectrum):  # returns detector calibration from
         # the given spectrum
-        # spectrum - continuous normalized energy spectrum function
+        # spectrum - normalized energy spectrum function
         calibration = np.zeros(self.number_of_channels)
         simulations_energy_deposit = np.zeros(self.number_of_channels)
         processed_data_energy_deposit = np.zeros(self.number_of_channels)
         for i in range(self.number_of_channels):
-            simulations_energy_deposit[i] = number_of_particles * scipy.integrate.simps(
-                lambda energy: spectrum(energy) * self.geant4_simulation_data_mean_energy_deposit_from_energy(energy),
-                self.geant4_simulation_energies[0],
-                self.geant4_simulation_energies[len(self.geant4_simulation_energies)]) / np.sum(
-                self.detector_processed_data[i, :])  # here spectrum convolves with simulation energy deposit to obtain
-            # total theoretical signal on individual channels
+            for j in range(len(self.geant4_simulation_energies)):
+                simulations_energy_deposit[i] = simulations_energy_deposit[i] + protons_spectrum[j] * \
+                                                self.geant4_simulation_data[j][i]
+                # here spectrum convolves with simulation energy deposit to obtain
+                # total theoretical signal on individual channels
+            simulations_energy_deposit[i] = len(self.detector_processed_data[i, :]) * simulations_energy_deposit[i]
             for j in range(len(self.detector_processed_data[i, :])):
                 processed_data_energy_deposit[i] = processed_data_energy_deposit[i] + self.detector_processed_data[i, j]
                 # obtains experimental total channel signal
             calibration[i] = simulations_energy_deposit[i] / processed_data_energy_deposit[i]  # according to definition
+        plt.bar(range(1, self.number_of_channels + 1), calibration)
+        plt.xlabel('Number of channel')
+        plt.ylabel('Calibration coefficient')
+        plt.savefig(os.path.join('pictures', 'calibration_' + str(self.number_of_calibration_picture) + '.png'))
+        self.number_of_calibration_picture = self.number_of_calibration_picture + 1
+        plt.close()
         return calibration
 
     def proton_energies_to_calibration(self, proton_energies):  # returns detector calibration from
@@ -101,7 +115,8 @@ class SpectrumCalibrationRestoration:
         plt.bar(range(1, self.number_of_channels + 1), calibration)
         plt.xlabel('Number of channel')
         plt.ylabel('Calibration coefficient')
-        plt.show()
+        plt.savefig(os.path.join('pictures', 'calibration_' + str(self.number_of_calibration_picture) + '.png'))
+        self.number_of_calibration_picture = self.number_of_calibration_picture + 1
         plt.close()
         return calibration
 
@@ -127,16 +142,21 @@ class SpectrumCalibrationRestoration:
         # uses calibrated processed data to obtain experimental proton energies array
         # analyses each accelerator proton hit event to return individual proton optimal energy in MeV
         energies = np.zeros(len(self.detector_processed_data[0, :]))
+        chi_square = np.zeros(len(self.detector_processed_data[0, :]))
         for event in range(len(self.detector_processed_data[0, :])):
             energies[event] = self.monochromatic_fit(event, calibration, channel_error_coefficients).x[0]
+            chi_square[event] = self.monochromatic_minimize_function(event, energies[event], calibration,
+                                                                     channel_error_coefficients)
         plt.hist(energies, bins=50)
         plt.xlabel('Proton energy, MeV')
         plt.ylabel('Distribution')
-        plt.show()
+        plt.savefig(os.path.join('pictures', 'spectrum_calibration_old_' + str(self.number_of_spectrum_picture) + '.png'))
+        self.number_of_spectrum_picture = self.number_of_spectrum_picture + 1
         plt.close()
+        print(np.mean(chi_square))  # выводит средний хи квадрат для мониторинга сходимости алгоритма КиСА
         return energies
 
-    def kisa_iterations(self, number_of_iterations):
+    def kisa_iterations_individual_restoration(self, number_of_iterations):
         # iteratively obtains optimal detector auto calibration and experimental proton spectrum
         # calibration_to_spectrum method returns detected accelerator proton energies array from calibration,
         # then proton_energies_to_calibration returns calibration from protons energies
@@ -145,4 +165,45 @@ class SpectrumCalibrationRestoration:
         for i in range(number_of_iterations):
             print(i)
             self.proton_energies = self.calibration_to_spectrum(self.calibration, self.channel_error_coefficients)
-            self.calibration = self.proton_energies_to_calibration(self.proton_energies)
+            # self.calibration = self.proton_energies_to_calibration(self.proton_energies)
+            self.calibration = self.calibration_proportional_to_muon_old(self.proton_energies)
+
+    def kisa_iterations_spectrum_restoration(self, number_of_iterations):
+        # iteratively obtains optimal detector auto calibration and experimental proton spectrum
+        # spectrum. method returns detected accelerator proton energy spectrum from calibration,
+        # then spectrum_to_calibration returns calibration from spectrum
+        # procedures repeat iteratively to obtain optimal spectrum and calibration
+        # initial calibration is taken from Bragg peak position analysis by Vladimir Palmin
+        for i in range(number_of_iterations):
+            print(i)
+            self.proton_energies, self.channel_error_coefficients = spectrum.optimiser(self.calibration)
+            self.calibration = self.spectrum_to_calibration(self.proton_energies)
+
+    def muon_old_calibration_optimizer_function(self, k, simulations_energy_deposit, processed_data_energy_deposit):
+        result = 0
+        for i in range(len(simulations_energy_deposit)):
+            result = result + np.square(simulations_energy_deposit[i] - k * self.muon_calibration_old[i] *
+                                        processed_data_energy_deposit[i])
+        return result
+
+    def calibration_proportional_to_muon_old(self, proton_energies):
+        simulations_energy_deposit = np.zeros(self.number_of_channels)
+        processed_data_energy_deposit = np.zeros(self.number_of_channels)
+        for i in range(self.number_of_channels):
+            for j in range(len(proton_energies)):
+                simulations_energy_deposit[i] = simulations_energy_deposit[i] + \
+                                                self.geant4_simulation_data_mean_energy_deposit_from_energy(
+                                                    i, proton_energies[j])
+                # obtains simulation total channel signal in MeV
+                processed_data_energy_deposit[i] = processed_data_energy_deposit[i] + self.detector_processed_data[i, j]
+                # obtains experimental total channel signal
+        calibration = self.muon_calibration_old * minimize(lambda k: self.muon_old_calibration_optimizer_function(
+            k, simulations_energy_deposit, processed_data_energy_deposit), x0=np.array([10]), method='Nelder-Mead',
+                                                           options={'maxiter': 100000, 'disp': False}).x[0]
+        plt.bar(range(1, self.number_of_channels + 1), calibration)
+        plt.xlabel('Number of channel')
+        plt.ylabel('Calibration coefficient')
+        plt.savefig(os.path.join('pictures', 'calibration_old_' + str(self.number_of_calibration_picture) + '.png'))
+        self.number_of_calibration_picture = self.number_of_calibration_picture + 1
+        plt.close()
+        return calibration
